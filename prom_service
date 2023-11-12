@@ -1,0 +1,78 @@
+## Variáveis de trabalho ##
+# Define o arquivo de despejo
+null_dir='/dev/null'
+# Define o diretório de download dos arquivos
+work_dir='/tmp'
+# Define o diretório de configuração do Prometheus
+config_dir='/etc/prometheus'
+# Define o diretório onde ficarão os binários.
+bin_dir=$(path_search=$(grep -iPo "(/\w+)+/bin:" <<<${PATH} | head -n1) ; echo ${path_search%:})
+# Define o arquivo de log
+log_file='/var/log/prometheus'
+# Define o diretório onde o serviço do Prometheus vai armazenar seus dados
+data_file='/var/lib/prometheus'
+# Define a versão do Prometheus
+url_path='https://github.com/prometheus/prometheus/releases/download/v2.38.0/prometheus-2.38.0.linux-amd64.tar.gz'
+# Nome do arquivo baixado
+file_name_gz="${url_path##*/}"
+## Variáveis de trabalho ##
+
+# Adicionar grupo "prometheus" (compatível com várias distribuições)
+sudo groupadd prometheus 2>${null_dir}
+# Adicionar usuário "prometheus" com shell /sbin/nologin e associá-lo ao grupo "prometheus" (compatível com várias distribuições)
+sudo useradd -M -s /sbin/nologin -g prometheus prometheus 2>${null_dir}
+
+# Download do Prometheus.
+wget -q --show-progress "${url_path}" -P "${work_dir}"
+
+# Validação e descompactação dos arquivos após o download
+{ 
+    [[ -a ${work_dir}/${file_name_gz} ]] && 
+    { echo "Descompactando ${work_dir}/${file_name_gz}" ; tar -xzvf "${work_dir}/${file_name_gz}" -C "${work_dir}" ; } ||
+    { echo "Verifique se o arquivo foi baixado para |${work_dir}|" &&
+    exec ls -lhd "${work_dir}/${file_name_gz}" ; }
+}
+
+# Manipulação de arquivos e diretório de configuração
+mkdir -p /{etc,var/lib}/prometheus ; touch /etc/systemd/system/prometheus.service /var/log/prometheus
+
+mv ${work_dir}/${file_name_gz/.tar.gz/}/prometheus "${bin_dir}"
+mv ${work_dir}/${file_name_gz/.tar.gz/}/promtool "${bin_dir}"
+mv ${work_dir}/${file_name_gz/.tar.gz/}/consoles "${config_dir}"
+mv ${work_dir}/${file_name_gz/.tar.gz/}/console_libraries "${config_dir}"
+mv ${work_dir}/${file_name_gz/.tar.gz/}/prometheus.yml "${config_dir}"
+
+sudo chown -R prometheus:prometheus "${log_file}"
+sudo chown -R prometheus:prometheus "${config_dir}"
+sudo chown -R prometheus:prometheus "${data_file}"
+sudo chown -R prometheus:prometheus "${bin_dir}"/prometheus
+sudo chown -R prometheus:prometheus "${bin_dir}"/promtool
+
+echo '[Unit]
+Description=Prometheus
+Documentation=https://prometheus.io/docs/introduction/overview/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=prometheus
+Group=prometheus
+ExecReload=/bin/kill -HUP \$MAINPID
+ExecStart=/usr/local/bin/prometheus \
+  --config.file=/etc/prometheus/prometheus.yml \
+  --storage.tsdb.path=/var/lib/prometheus \
+  --web.console.templates=/etc/prometheus/consoles \
+  --web.console.libraries=/etc/prometheus/console_libraries \
+  --web.listen-address=0.0.0.0:9090 \
+  --web.external-url=
+
+SyslogIdentifier=prometheus
+Restart=always
+
+[Install]
+WantedBy=multi-user.target' >> /etc/systemd/system/prometheus.service
+
+systemctl daemon-reload
+systemctl enable --now prometheus.service
+systemctl status prometheus.service
